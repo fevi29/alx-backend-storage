@@ -1,0 +1,3 @@
+// Displays the number of documents in the collection school
+// database name will be passed
+db.school.count();
