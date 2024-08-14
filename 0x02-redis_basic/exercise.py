@@ -10,73 +10,50 @@ import uuid
 
 def count_calls(method: Callable) -> Callable:
     """
-    Prototype: def count_calls(method: Caallable) -> Callable:
-    Returns a Callable
+    Creates a wrapper_function function that increments count and returns
+    the function
     """
-    @wraps(method)
-    def wrapper(self, *args, **kwds):
+    @functools.wraps(method)
+    def wrapper_decorator(*args, **kwargs):
         """
-        Prototype: def wrapper(self, *args, **kwds):
-        Returns wrapper
+        Function that increments count for key
+        (func.__qualname__) every time the method is called
         """
-        key_m = method.__qualname__
-        self._redis.incr(key_m)
-        return method(self, *args, **kwds)
-    return wrapper
+        key = method.__qualname__
+        self = args[0]
+        self._redis.incr(key, amount=1)
+        value = method(*args, **kwargs)
+        return value
+    return wrapper_decorator
 
 
 def call_history(method: Callable) -> Callable:
     """
-    Prototype: def call_history(method: Callable) -> Callable:
-    Returns a Callable
+    stores history of inputs and outputs for a method
     """
-    @wraps(method)
-    def wrapper(self, *args, **kwds):
+    @functools.wraps(method)
+    def wrapper_decorator(*args, **kwargs):
         """
-        Prototype: def wrapper(self, *args, **kwds):
-        Returns wrapper
+        Creates inputs and outputs lists
         """
-        key_m = method.__qualname__
-        inp_m = key_m + ':inputs'
-        outp_m = key_m + ":outputs"
-        data = str(args)
-        self._redis.rpush(inp_m, data)
-        fin = method(self, *args, **kwds)
-        self._redis.rpush(outp_m, str(fin))
-        return fin
-    return wrapper
+        inputs = method.__qualname__ + ":inputs"
+        outputs = method.__qualname__ + ":outputs"
+        self = args[0]
+        new_args = str(args[1:])
+        self._redis.rpush(inputs, new_args)
+        value = method(*args, **kwargs)
+        self._redis.rpush(outputs, value)
+        return value
+    return wrapper_decorator
 
 
-def replay(func: Callable):
+class Cache:
     """
-    Prototype: def replay(func: Callable):
-    Displays history of calls of a particular function
-    """
-    r = redis.Redis()
-    key_m = func.__qualname__
-    inp_m = r.lrange("{}:inputs".format(key_m), 0, -1)
-    outp_m = r.lrange("{}:outputs".format(key_m), 0, -1)
-    calls_number = len(inp_m)
-    times_str = 'times'
-    if calls_number == 1:
-        times_str = 'time'
-    fin = '{} was called {} {}:'.format(key_m, calls_number, times_str)
-    print(fin)
-    for k, v in zip(inp_m, outp_m):
-        fin = '{}(*{}) -> {}'.format(
-            key_m, k.decode('utf-8'), v.decode('utf-8'))
-        print(fin)
-
-
-class Cache():
-    """
-    Store instance of Redis client as private variable _redis
-    Flush the instance using flushdb
+    class describing the cache class and writing strings to Redis
     """
     def __init__(self):
         """
-        Prototype: def __init__(self):
-        Store instance of Redis client as private variable _redis
+        Initialising an instance of Redis client
         """
         self._redis = redis.Redis()
         self._redis.flushdb()
@@ -85,23 +62,62 @@ class Cache():
     @count_calls
     def store(self, data: Union[str, bytes, int, float]) -> str:
         """
-        Store history of inputs and outputs for a particular function
+        Takes in a data, generates an uuid to be used as a key
+        storing data as input value and returns the key as a
+        string
         """
-        gen = str(uuid.uuid4())
-        self._redis.set(gen, data)
-        return gen
+        key = uuid.uuid4()
+        key = str(key)
+        self._redis.set(key, data)
+        return key
 
     def get(self, key: str,
-            fn: Optional[Callable] = None) -> Union[str, bytes, int, float]:
+            fn: Callable[[Any],
+                         Union[str, int, None]]
+            = None) -> Union[str, int, None]:
         """
-        Convert data back to desired format
+        Takes in key, fn which is used to convert data back to desired format
         """
-        value = self._redis.get(key)
-        return value if not fn else fn(value)
+        val = self._redis.get(key)
+        if not val:
+            return None
+        if fn == int:
+            val = self.get_int(val)
+        elif fn == str:
+            val = self.get_str(val)
+        elif fn:
+            val = fn(val)
+        return val
 
-    def get_int(self, key):
-        return self.get(key, int)
+    def get_str(val: bytes) -> str:
+        """
+        converts byte string representation to a str and returns it
+        """
+        return str(decoded)
 
-    def get_str(self, key):
-        value = self._redis.get(key)
-        return value.decode("utf-8")
+    def get_int(self, val: bytes) -> int:
+        """
+        converts byte string representation to an int and returns it
+        """
+        return int(val)
+
+
+def replay(cache: Cache, method: Callable) -> None:
+    """
+    Display history of calls of a particular function
+    """
+    count_key = method.__qualname__
+    inputs_key = method.__qualname__ + ":inputs"
+    outputs_key = method.__qualname__ + ":outputs"
+
+    count = cache._redis.get(count_key)
+    if count is None:
+        count = 0
+    else:
+        count = int(count)
+    print(f"{count_key} was called {count} times:")
+    for inputs, outputs in zip(cache._redis.lrange(inputs_key, 0, -1),
+                               cache._redis.lrange(outputs_key, 0, -1)):
+        inputs = inputs.decode('utf-8')
+        outputs = outputs.decode('utf-8')
+        print(f"{count_key}(*{inputs}) -> {outputs}")
